@@ -11,8 +11,8 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **b. Design changes**
 
-- Did your design change during implementation?
-- If yes, describe at least one change and why you made it.
+- Did your design change during implementation? Yes
+- If yes, describe at least one change and why you made it. Priority enum (IntEnum, HIGH=0 → LOW=2) so sort_tasks_by_priority sorts naturally with no rank map.
 
 ---
 
