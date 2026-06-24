@@ -1,15 +1,57 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal pet care scheduling app
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Owner {
+        +String name
+        +float availableHoursPerDay
+        +Time preferredStartTime
+        +getAvailableTime() float
+        +updatePreferences() void
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Pet {
+        +String name
+        +String species
+        +String breed
+        +int age
+        +getPetInfo() String
+        +updatePetInfo() void
     }
 
-    ClassName --> AnotherClass : relationship
+    class Task {
+        +String name
+        +String category
+        +int duration
+        +String priority
+        +bool isRecurring
+        +getDuration() int
+        +getPriority() String
+        +markComplete() void
+    }
+
+    class Scheduler {
+        +Owner owner
+        +Pet pet
+        +List~Task~ taskList
+        +Time startTime
+        +generatePlan() DailyPlan
+        +sortTasksByPriority() List~Task~
+        +filterTasksByAvailableTime() List~Task~
+        +resolveConflicts() void
+        +explainReasoning() String
+    }
+
+    class DailyPlan {
+        +Date date
+        +List~ScheduledTask~ scheduledTasks
+        +String reasoning
+        +displayPlan() void
+        +getTotalTimeUsed() int
+        +isTimeSlotAvailable() bool
+    }
+
+    Scheduler "1" --> "1" Owner : has
+    Scheduler "1" --> "1" Pet : has
+    Scheduler "1" --> "*" Task : manages
+    Scheduler "1" ..> "1" DailyPlan : generates
+    DailyPlan "1" --> "*" Task : schedules
