@@ -14,7 +14,7 @@ overlap checks never have to deal with timedelta/time rollover.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum, IntEnum
 
 
@@ -38,6 +38,21 @@ class Category(Enum):
     ENRICHMENT = "enrichment"
 
 
+class Recurrence(Enum):
+    """How often a task repeats. ``interval`` is the gap to the next occurrence."""
+    NONE = "none"
+    DAILY = "daily"
+    WEEKLY = "weekly"
+
+    @property
+    def interval(self) -> timedelta | None:
+        """timedelta to the next occurrence, or None for one-off tasks."""
+        return {
+            Recurrence.DAILY: timedelta(days=1),
+            Recurrence.WEEKLY: timedelta(weeks=1),
+        }.get(self)
+
+
 @dataclass
 class Task:
     """A single care activity for a pet."""
@@ -45,9 +60,16 @@ class Task:
     category: Category
     duration: int  # minutes
     priority: Priority
-    is_recurring: bool = False
+    recurrence: Recurrence = Recurrence.NONE
     is_complete: bool = False
+    preferred_time: int | None = None  # minutes since midnight; None = flexible
+    due_date: date | None = None  # the day this instance is scheduled for
     pet: Pet | None = None  # back-reference, set by Pet.add_task()
+
+    @property
+    def is_recurring(self) -> bool:
+        """True if this task repeats on some interval."""
+        return self.recurrence is not Recurrence.NONE
 
     def get_duration(self) -> int:
         """Return the task duration in minutes."""
@@ -57,14 +79,44 @@ class Task:
         """Return the task's priority level."""
         return self.priority
 
-    def mark_complete(self) -> None:
-        """Mark this task as completed."""
+    def mark_complete(self) -> Task | None:
+        """Mark this task done; if it recurs, spawn the next occurrence.
+
+        Returns the newly-created next-occurrence Task (also attached to the
+        same pet), or None for one-off tasks.
+        """
         self.is_complete = True
+        return self._spawn_next_occurrence()
+
+    def _spawn_next_occurrence(self) -> Task | None:
+        """Create the next dated instance of a recurring task.
+
+        Uses ``timedelta`` so calendar boundaries are handled correctly:
+        a DAILY task due Jan 31 rolls to Feb 1, and WEEKLY spans month/year
+        ends and leap days without any manual day-counting.
+        """
+        interval = self.recurrence.interval
+        if interval is None:
+            return None  # one-off task, nothing to repeat
+        base = self.due_date or date.today()
+        next_task = Task(
+            name=self.name,
+            category=self.category,
+            duration=self.duration,
+            priority=self.priority,
+            recurrence=self.recurrence,
+            preferred_time=self.preferred_time,
+            due_date=base + interval,
+        )
+        if self.pet is not None:
+            self.pet.add_task(next_task)
+        return next_task
 
     def __str__(self) -> str:
         """Return a readable one-line label for the task."""
-        flag = " (recurring)" if self.is_recurring else ""
-        return f"{self.name} [{self.category.value}, {self.duration}m]{flag}"
+        flag = f" ({self.recurrence.value})" if self.is_recurring else ""
+        anchor = f" @{_fmt(self.preferred_time)}" if self.preferred_time is not None else ""
+        return f"{self.name} [{self.category.value}, {self.duration}m]{anchor}{flag}"
 
 
 @dataclass
@@ -126,6 +178,24 @@ class Owner:
         """Flatten every task across all pets into one list."""
         return [task for pet in self.pets for task in pet.tasks]
 
+    def get_tasks(
+        self,
+        pet_name: str | None = None,
+        is_complete: bool | None = None,
+    ) -> list[Task]:
+        """Return tasks filtered by pet name and/or completion status.
+
+        Each filter is optional: pass ``None`` (the default) to ignore it.
+        e.g. ``get_tasks(pet_name="Rex", is_complete=False)`` returns Rex's
+        pending tasks only.
+        """
+        tasks = self.get_all_tasks()
+        if pet_name is not None:
+            tasks = [t for t in tasks if t.pet is not None and t.pet.name == pet_name]
+        if is_complete is not None:
+            tasks = [t for t in tasks if t.is_complete == is_complete]
+        return tasks
+
 
 @dataclass
 class ScheduledTask:
@@ -144,6 +214,7 @@ class DailyPlan:
     date: date
     scheduled_tasks: list[ScheduledTask] = field(default_factory=list)
     reasoning: str = ""
+    conflicts: list[str] = field(default_factory=list)
 
     def display_plan(self) -> None:
         """Print the formatted daily plan to the terminal."""
@@ -154,6 +225,8 @@ class DailyPlan:
             who = st.task.pet.name if st.task.pet else "?"
             print(f"  {_fmt(st.start_time)}-{_fmt(st.end_time)}  {who}: {st.task}")
         print(f"  total time used: {self.get_total_time_used()} min")
+        for note in self.conflicts:
+            print(f"  (!) {note}")
         if self.reasoning:
             print(f"  reasoning: {self.reasoning}")
 
@@ -169,6 +242,20 @@ class DailyPlan:
             for st in self.scheduled_tasks
         )
 
+    def earliest_slot(self, not_before: int, duration: int) -> int:
+        """Earliest start time >= ``not_before`` whose slot overlaps nothing.
+
+        Walks the already-placed tasks in time order, sliding the candidate
+        start past any task it would collide with. Returns the first gap wide
+        enough for ``duration``.
+        """
+        candidate = not_before
+        for st in sorted(self.scheduled_tasks, key=lambda s: s.start_time):
+            if candidate + duration <= st.start_time:
+                break  # fits in the gap before this task
+            candidate = max(candidate, st.end_time)
+        return candidate
+
 
 @dataclass
 class Scheduler:
@@ -176,27 +263,74 @@ class Scheduler:
     owner: Owner
     start_time: int | None = None  # minutes since midnight; defaults to owner pref
     _skipped: list[Task] = field(default_factory=list, init=False)
+    _bumped: list[tuple[Task, int, int]] = field(default_factory=list, init=False)
+    _overflow: list[Task] = field(default_factory=list, init=False)
 
     def generate_plan(self, plan_date: date | None = None) -> DailyPlan:
-        """Build a DailyPlan: collect -> sort -> filter -> place -> explain."""
+        """Build a DailyPlan: collect -> sort -> filter -> place -> explain.
+
+        Placement honors each task's ``preferred_time`` when set, sliding it
+        later only as far as needed to avoid an overlap (recording the bump),
+        then fills the remaining gaps with flexible tasks in priority order.
+        """
         start = self.start_time if self.start_time is not None else self.owner.preferred_start_time
+        day_end = start + self.owner.get_available_time()
         plan = DailyPlan(date=plan_date or date.today())
 
         selected = self.filter_tasks_by_available_time()
+        anchored = sorted(
+            (t for t in selected if t.preferred_time is not None),
+            key=lambda t: t.preferred_time,
+        )
+        flexible = [t for t in selected if t.preferred_time is None]
 
-        cursor = start
-        for task in selected:
-            plan.scheduled_tasks.append(ScheduledTask(start_time=cursor, task=task))
-            cursor += task.duration
+        self._bumped = []
+        self._overflow = []
 
-        self.resolve_conflicts(plan)
+        # Time-anchored tasks first: they reserve their slots so flexible
+        # tasks flow around them.
+        for task in anchored:
+            desired = max(task.preferred_time, start)
+            slot_start = plan.earliest_slot(desired, task.duration)
+            if slot_start + task.duration > day_end:
+                self._overflow.append(task)
+                continue
+            if slot_start > desired:
+                self._bumped.append((task, desired, slot_start))
+            plan.scheduled_tasks.append(ScheduledTask(start_time=slot_start, task=task))
+
+        # Flexible tasks (already priority-ordered) backfill the gaps.
+        for task in flexible:
+            slot_start = plan.earliest_slot(start, task.duration)
+            if slot_start + task.duration > day_end:
+                self._overflow.append(task)
+                continue
+            plan.scheduled_tasks.append(ScheduledTask(start_time=slot_start, task=task))
+
+        plan.scheduled_tasks.sort(key=lambda st: st.start_time)
+        # Placement is overlap-free by construction; run the detector anyway as
+        # a safety net that also catches any manually-added slots.
+        plan.conflicts = self._describe_conflicts() + self.detect_conflicts(plan)
         plan.reasoning = self.explain_reasoning()
         return plan
 
     def sort_tasks_by_priority(self) -> list[Task]:
         """Pending tasks ordered high -> low priority (shorter first on ties)."""
         pending = [t for t in self.owner.get_all_tasks() if not t.is_complete]
-        return sorted(pending, key=lambda t: (t.priority.value, t.duration))
+        return sorted(pending, key=lambda t: (t.priority.value, t.duration, t.category.value))
+
+    def sort_by_time(self) -> list[Task]:
+        """Pending tasks ordered by preferred time; flexible tasks (None) last.
+
+        ``preferred_time`` is minutes since midnight, so a plain numeric key
+        sorts chronologically. ``None`` maps to +infinity so unanchored tasks
+        fall to the end rather than raising on a None-vs-int comparison.
+        """
+        pending = [t for t in self.owner.get_all_tasks() if not t.is_complete]
+        return sorted(
+            pending,
+            key=lambda t: t.preferred_time if t.preferred_time is not None else float("inf"),
+        )
 
     def filter_tasks_by_available_time(self) -> list[Task]:
         """Greedily keep highest-priority tasks that fit the owner's budget.
@@ -215,27 +349,57 @@ class Scheduler:
                 self._skipped.append(task)
         return selected
 
-    def resolve_conflicts(self, plan: DailyPlan) -> None:
-        """Push overlapping tasks later so slots never collide.
+    def detect_conflicts(self, plan: DailyPlan) -> list[str]:
+        """Return warning messages for any two tasks scheduled at the same time.
 
-        Sequential placement in generate_plan is already non-overlapping;
-        this is a safety pass that also fixes any manually-added tasks.
+        Lightweight, non-throwing overlap check: a plain pairwise scan over the
+        plan's slots. An empty list means the plan is clean. Two slots overlap
+        when one starts before the other ends; the message notes whether the
+        clash is for the same pet or across different pets.
         """
-        ordered = sorted(plan.scheduled_tasks, key=lambda st: st.start_time)
-        cursor: int | None = None
-        for st in ordered:
-            if cursor is not None and st.start_time < cursor:
-                st.start_time = cursor
-            cursor = st.end_time
-        plan.scheduled_tasks = ordered
+        warnings: list[str] = []
+        slots = sorted(plan.scheduled_tasks, key=lambda s: s.start_time)
+        for i, a in enumerate(slots):
+            for b in slots[i + 1:]:
+                # Sorted by start, so a.start_time <= b.start_time here.
+                if b.start_time >= a.end_time:
+                    break  # b and every later slot start after a ends
+                warnings.append(self._conflict_message(a, b))
+        return warnings
+
+    @staticmethod
+    def _conflict_message(a: ScheduledTask, b: ScheduledTask) -> str:
+        """Format a single overlap between two scheduled tasks."""
+        who_a = a.task.pet.name if a.task.pet else "?"
+        who_b = b.task.pet.name if b.task.pet else "?"
+        same_pet = a.task.pet is not None and a.task.pet is b.task.pet
+        scope = f"same pet ({who_a})" if same_pet else f"{who_a} vs {who_b}"
+        return (
+            f"Conflict [{scope}]: '{a.task.name}' "
+            f"({_fmt(a.start_time)}-{_fmt(a.end_time)}) overlaps '{b.task.name}' "
+            f"({_fmt(b.start_time)}-{_fmt(b.end_time)})."
+        )
+
+    def _describe_conflicts(self) -> list[str]:
+        """Human-readable notes about bumped and unplaceable tasks."""
+        notes = []
+        for task, desired, actual in self._bumped:
+            notes.append(
+                f"{task.name} moved from {_fmt(desired)} to {_fmt(actual)} "
+                f"to avoid an overlap."
+            )
+        for task in self._overflow:
+            notes.append(f"{task.name} couldn't fit before the day's time ran out.")
+        return notes
 
     def explain_reasoning(self) -> str:
         """Human-readable summary of the most recent scheduling decisions."""
-        parts = ["Ordered tasks by priority (high first), then packed them "
-                 "back-to-back within the owner's daily time budget."]
+        parts = ["Placed time-anchored tasks at their preferred times, then "
+                 "filled the gaps with the highest-priority tasks that fit the "
+                 "owner's daily time budget."]
         if self._skipped:
             names = ", ".join(t.name for t in self._skipped)
-            parts.append(f"Skipped {len(self._skipped)} task(s) that didn't fit: {names}.")
+            parts.append(f"Skipped {len(self._skipped)} task(s) over budget: {names}.")
         else:
             parts.append("All pending tasks fit in the available time.")
         return " ".join(parts)
