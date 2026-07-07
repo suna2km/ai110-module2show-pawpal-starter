@@ -25,8 +25,8 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **b. Tradeoffs**
 
-- Describe one tradeoff your scheduler makes.
-- Why is that tradeoff reasonable for this scenario?
+- Describe one tradeoff your scheduler makes. filter_tasks_by_available_time selects tasks greedily by priority instead of solving for the optimal set that maximizes time used.
+- Why is that tradeoff reasonable for this scenario? Because priority is the point. A pet owner would rather do the one high-priority task (meds) than skip it to squeeze in two low-priority ones (grooming + enrichment) that happen to fill the clock better. 
 
 ---
 

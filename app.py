@@ -48,6 +48,19 @@ def _fmt(minutes: int) -> str:
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
+def _task_row(t: Task) -> dict:
+    """Flatten a Task into a table row for st.table."""
+    return {
+        "pet": t.pet.name if t.pet else "?",
+        "task": t.name,
+        "category": t.category.value,
+        "duration (min)": t.duration,
+        "priority": t.priority.name.title(),
+        "preferred": _fmt(t.preferred_time) if t.preferred_time is not None else "—",
+        "repeats": t.recurrence.value,
+    }
+
+
 # --- Persistent state: the Owner lives in the session "vault" so pets and
 # --- tasks survive Streamlit's rerun-on-every-interaction model. ---
 if "owner" not in st.session_state:
@@ -121,37 +134,62 @@ else:
             )
             st.success(f"Added '{task_title}' to {target_pet_name}.")
 
-all_tasks = owner.get_all_tasks()
-if all_tasks:
-    st.write("All tasks across pets:")
-    st.table(
-        [
-            {
-                "pet": t.pet.name if t.pet else "?",
-                "task": t.name,
-                "category": t.category.value,
-                "duration (min)": t.duration,
-                "priority": t.priority.name.title(),
-                "preferred": _fmt(t.preferred_time) if t.preferred_time is not None else "—",
-                "repeats": t.recurrence.value,
-            }
-            for t in all_tasks
-        ]
+# The Scheduler is the "brain": all task ordering/conflict logic lives there,
+# so the UI just calls its methods rather than re-implementing sorting itself.
+scheduler = Scheduler(owner)
+
+if owner.get_all_tasks():
+    st.markdown("#### 📋 Task List")
+    sort_choice = st.radio(
+        "Sort by",
+        ["Time of day", "Priority"],
+        horizontal=True,
     )
+    ordered = (
+        scheduler.sort_by_time()
+        if sort_choice == "Time of day"
+        else scheduler.sort_tasks_by_priority()
+    )
+    if ordered:
+        st.caption(f"{len(ordered)} pending task(s), ordered by {sort_choice.lower()}.")
+        st.table([_task_row(t) for t in ordered])
+    else:
+        st.success("All tasks are complete — nothing pending!", icon="✅")
+
+    completed = owner.get_tasks(is_complete=True)
+    if completed:
+        with st.expander(f"Completed tasks ({len(completed)})"):
+            st.table([_task_row(t) for t in completed])
 
 st.divider()
 
 # --- Generate Schedule: hand the Owner to the Scheduler brain ---
 st.subheader("Build Schedule")
 
-if st.button("Generate schedule"):
-    scheduler = Scheduler(owner)
+if st.button("Generate schedule", type="primary"):
     plan = scheduler.generate_plan()
 
     if not plan.scheduled_tasks:
         st.info("Nothing to schedule — add some tasks first.")
     else:
-        st.write("### Today's Schedule")
+        # Headline status: green when the day is clear, amber the moment the
+        # scheduler flags an overlap so the owner can't miss it.
+        if plan.conflicts:
+            st.warning(
+                f"Heads up — {len(plan.conflicts)} scheduling conflict"
+                f"{'s' if len(plan.conflicts) != 1 else ''} to resolve below.",
+                icon="⚠️",
+            )
+        else:
+            st.success("Plan generated — no conflicts. You're all set!", icon="✅")
+
+        # At-a-glance summary of the plan.
+        col_a, col_b, col_c = st.columns(3)
+        col_a.metric("Tasks scheduled", len(plan.scheduled_tasks))
+        col_b.metric("Time used", f"{plan.get_total_time_used()} min")
+        col_c.metric("Conflicts", len(plan.conflicts))
+
+        st.markdown("#### 🗓️ Today's Schedule")
         st.table(
             [
                 {
@@ -163,7 +201,17 @@ if st.button("Generate schedule"):
                 for slot in plan.scheduled_tasks
             ]
         )
-        st.caption(f"Total time used: {plan.get_total_time_used()} minutes")
-        for note in plan.conflicts:
-            st.warning(note)
-        st.info(plan.reasoning)
+
+        # Conflicts: one clearly-scoped card each, with an actionable next step —
+        # far more useful to an owner than a single lumped-together error string.
+        if plan.conflicts:
+            st.markdown("#### ⚠️ Conflicts to resolve")
+            for note in plan.conflicts:
+                st.warning(note, icon="⚠️")
+            st.caption(
+                "To fix: shorten a task, give it a different preferred time, or "
+                "mark one complete — then regenerate the plan."
+            )
+
+        with st.expander("Why this plan? (scheduler reasoning)"):
+            st.info(plan.reasoning)

@@ -1,0 +1,104 @@
+classDiagram
+    %% PawPal pet care scheduling app — matches pawpal_system.py
+
+    class Priority {
+        <<enumeration>>
+        HIGH
+        MEDIUM
+        LOW
+    }
+
+    class Category {
+        <<enumeration>>
+        WALK
+        FEEDING
+        MEDS
+        GROOMING
+        ENRICHMENT
+    }
+
+    class Recurrence {
+        <<enumeration>>
+        NONE
+        DAILY
+        WEEKLY
+        +interval() timedelta
+    }
+
+    class Owner {
+        +str name
+        +int availableMinutesPerDay
+        +int preferredStartTime
+        +List~Pet~ pets
+        +getAvailableTime() int
+        +updatePreferences() void
+        +addPet(Pet) Pet
+        +getAllTasks() List~Task~
+        +getTasks(petName, isComplete) List~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +List~Task~ tasks
+        +getPetInfo() str
+        +updatePetInfo() void
+        +addTask(Task) Task
+    }
+
+    class Task {
+        +str name
+        +Category category
+        +int duration
+        +Priority priority
+        +Recurrence recurrence
+        +bool isComplete
+        +int preferredTime
+        +date dueDate
+        +Pet pet
+        +isRecurring() bool
+        +getDuration() int
+        +getPriority() Priority
+        +markComplete() Task
+    }
+
+    class ScheduledTask {
+        +int startTime
+        +Task task
+        +endTime() int
+    }
+
+    class DailyPlan {
+        +date date
+        +List~ScheduledTask~ scheduledTasks
+        +str reasoning
+        +List~str~ conflicts
+        +displayPlan() void
+        +getTotalTimeUsed() int
+        +isTimeSlotAvailable(startTime, duration) bool
+        +earliestSlot(notBefore, duration) int
+    }
+
+    class Scheduler {
+        +Owner owner
+        +int startTime
+        +generatePlan(planDate) DailyPlan
+        +sortTasksByPriority() List~Task~
+        +sortByTime() List~Task~
+        +filterTasksByAvailableTime() List~Task~
+        +detectConflicts(DailyPlan) List~str~
+        +explainReasoning() str
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has
+    Task --> Pet : belongs to
+    Task --> Category
+    Task --> Priority
+    Task --> Recurrence
+    Scheduler "1" --> "1" Owner : reads
+    Scheduler ..> DailyPlan : generates
+    DailyPlan "1" --> "*" ScheduledTask : schedules
+    ScheduledTask "1" --> "1" Task : wraps
