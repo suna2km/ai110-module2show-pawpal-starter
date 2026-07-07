@@ -20,8 +20,8 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+- What constraints does your scheduler consider (for example: time, priority, preferences)? (1) the owner's available time budget in minutes, (2) task priority (high/medium/low), (3) preferences in the form of a preferred time of day that anchors a task to a slot, and (4) completion status 
+- How did you decide which constraints mattered most?treated time and priority as *hard* constraints and preferred time as a *soft* constraint 
 
 **b. Tradeoffs**
 
@@ -34,13 +34,13 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)? I used it in outlining, brainstorming and helping explain what I should be doing.
+- What kinds of prompts or questions were most helpful? Prompts that targeted a specific issue with a specific section of code.
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+- Describe one moment where you did not accept an AI suggestion as-is. When it suggested improvements or expansion beyond what was required.
+- How did you evaluate or verify what the AI suggested? I looked at the overall aim of the project and whether the suggestion would improve it or make it complicated.
 
 ---
 
@@ -48,13 +48,13 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+- What behaviors did you test? I focused on the Scheduler's decision-making so task state, sorting, recurrence etc.
+- Why were these tests important?  because those are the branches least likely to be exercised by casual manual clicking in the UI
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+- How confident are you that your scheduler works correctly? I am pretty confident
+- What edge cases would you test next if you had more time? tasks longer than the entire budget, 0 or negative durations etc.
 
 ---
 
@@ -62,12 +62,12 @@ Generate and view a daily plan — The user can trigger the scheduler to produce
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+- What part of this project are you most satisfied with? I am most satisfied with the logic of this project.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+- If you had another iteration, what would you improve or redesign? I would add task editing/deletion to the UI
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+- What is one important thing you learned about designing systems or working with AI on this project? I learned that prompting the AI to build on my work gives better results than telling it to write something from scratch.
