@@ -63,18 +63,48 @@ PawPal plan for 2026-07-06
 
 ## 🧪 Testing PawPal+
 
-```bash
-# Run the full test suite:
-pytest
+Run the full test suite from the project root:
 
-# Run with coverage:
-pytest --cov
+```bash
+python -m pytest
 ```
+
+The suite (`tests/test_pawpal.py`) covers the core scheduling behaviors and their edge cases:
+
+- **Sorting** — chronological order by `preferred_time` (flexible tasks last), and the priority order with duration/category tiebreakers.
+- **Filtering** — greedily keeping the highest-priority tasks that fit the time budget while recording what was skipped.
+- **Recurrence** — completing a `DAILY`/`WEEKLY` task marks it done and spawns the next occurrence for the following day/week, correctly rolling across month boundaries.
+- **Conflict detection** — flagging same-time overlaps (both same-pet and cross-pet) and returning empty for back-to-back, non-overlapping plans.
+- **Schedule generation edge cases** — an empty plan when a pet has no tasks, two tasks at the same preferred time being bumped apart (not left conflicting), anchored times before the start clamping to the start, and tasks past the day's window overflowing.
 
 Sample test output:
 
 ```
-# Paste your pytest output here
+============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.0.3, pluggy-1.6.0
+rootdir: ...\ai110-module2show-pawpal-starter
+collected 18 items
+
+tests/test_pawpal.py::test_mark_complete_changes_status PASSED           [  5%]
+tests/test_pawpal.py::test_add_task_increases_pet_task_count PASSED      [ 11%]
+tests/test_pawpal.py::test_sort_by_time_orders_by_preferred_time_with_flexible_last PASSED [ 16%]
+tests/test_pawpal.py::test_sort_by_time_excludes_completed_tasks PASSED  [ 22%]
+tests/test_pawpal.py::test_one_off_task_does_not_spawn_on_complete PASSED [ 27%]
+tests/test_pawpal.py::test_daily_task_spawns_next_day_and_attaches_to_pet PASSED [ 33%]
+tests/test_pawpal.py::test_weekly_recurrence_uses_timedelta_across_month_boundary PASSED [ 38%]
+tests/test_pawpal.py::test_detect_conflicts_flags_cross_pet_overlap PASSED [ 44%]
+tests/test_pawpal.py::test_detect_conflicts_flags_same_pet_overlap PASSED [ 50%]
+tests/test_pawpal.py::test_detect_conflicts_clean_plan_returns_empty PASSED [ 55%]
+tests/test_pawpal.py::test_sort_tasks_by_priority_tie_break_by_duration_then_category PASSED [ 61%]
+tests/test_pawpal.py::test_filter_keeps_high_priority_and_records_over_budget_skips PASSED [ 66%]
+tests/test_pawpal.py::test_daily_task_marks_complete_and_creates_next_days_task PASSED [ 72%]
+tests/test_pawpal.py::test_generate_plan_places_tasks_in_chronological_order PASSED [ 77%]
+tests/test_pawpal.py::test_generate_plan_empty_when_no_tasks PASSED      [ 83%]
+tests/test_pawpal.py::test_two_tasks_at_same_preferred_time_are_bumped_not_conflicting PASSED [ 88%]
+tests/test_pawpal.py::test_anchored_task_before_start_is_clamped_to_start PASSED [ 94%]
+tests/test_pawpal.py::test_anchored_task_past_day_end_overflows_and_is_reported PASSED [100%]
+
+============================= 18 passed in 0.11s ==============================
 ```
 
 ## 📐 Smarter Scheduling

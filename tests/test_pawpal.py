@@ -132,3 +132,123 @@ def test_detect_conflicts_clean_plan_returns_empty():
     )
 
     assert Scheduler(owner).detect_conflicts(plan) == []
+
+
+# --- Sorting correctness ------------------------------------------------------
+
+def test_sort_tasks_by_priority_tie_break_by_duration_then_category():
+    owner = Owner("Sam", available_minutes_per_day=240, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    # All HIGH so priority ties; duration breaks first, then category name.
+    longer = pet.add_task(Task("Long walk", Category.WALK, 45, Priority.HIGH))
+    walk = pet.add_task(Task("Quick walk", Category.WALK, 10, Priority.HIGH))
+    meds = pet.add_task(Task("Meds", Category.MEDS, 10, Priority.HIGH))
+
+    ordered = Scheduler(owner).sort_tasks_by_priority()
+
+    # Same priority: shorter duration first; on equal duration, category
+    # "meds" sorts before "walk".
+    assert ordered == [meds, walk, longer]
+
+
+# --- Filtering by available time ---------------------------------------------
+
+def test_filter_keeps_high_priority_and_records_over_budget_skips():
+    owner = Owner("Sam", available_minutes_per_day=40, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    high = pet.add_task(Task("Meds", Category.MEDS, 30, Priority.HIGH))
+    medium = pet.add_task(Task("Walk", Category.WALK, 20, Priority.MEDIUM))
+    low = pet.add_task(Task("Groom", Category.GROOMING, 10, Priority.LOW))
+
+    scheduler = Scheduler(owner)
+    selected = scheduler.filter_tasks_by_available_time()
+
+    # 30 fits, +20 would exceed the 40-min budget (skipped), +10 still fits.
+    assert selected == [high, low]
+    assert scheduler._skipped == [medium]
+
+
+# --- Recurrence logic ---------------------------------------------------------
+
+def test_daily_task_marks_complete_and_creates_next_days_task():
+    pet = Pet("Rex", "dog", "Labrador", 3)
+    walk = pet.add_task(
+        Task("Morning walk", Category.WALK, 30, Priority.HIGH,
+             recurrence=Recurrence.DAILY, preferred_time=8 * 60,
+             due_date=date(2026, 7, 6))
+    )
+
+    spawned = walk.mark_complete()
+
+    # Original is done; a fresh, incomplete task exists for the next day.
+    assert walk.is_complete is True
+    assert spawned is not None
+    assert spawned.is_complete is False
+    assert spawned.due_date == date(2026, 7, 7)
+    assert spawned.name == walk.name and spawned.preferred_time == walk.preferred_time
+    assert spawned in pet.tasks
+
+
+# --- Schedule generation: happy path + edge cases -----------------------------
+
+def test_generate_plan_places_tasks_in_chronological_order():
+    # Budget spans 08:00-18:00 so both anchored times fall inside the window.
+    owner = Owner("Sam", available_minutes_per_day=600, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    pet.add_task(Task("Dinner", Category.FEEDING, 15, Priority.HIGH, preferred_time=12 * 60))
+    pet.add_task(Task("Meds", Category.MEDS, 10, Priority.HIGH, preferred_time=8 * 60))
+
+    plan = Scheduler(owner).generate_plan(plan_date=date(2026, 7, 6))
+
+    starts = [st.start_time for st in plan.scheduled_tasks]
+    assert starts == sorted(starts)
+    assert [st.task.name for st in plan.scheduled_tasks] == ["Meds", "Dinner"]
+
+
+def test_generate_plan_empty_when_no_tasks():
+    owner = Owner("Sam", available_minutes_per_day=120, preferred_start_time=8 * 60)
+    owner.add_pet(Pet("Rex", "dog", "Labrador", 3))  # pet with no tasks
+
+    plan = Scheduler(owner).generate_plan(plan_date=date(2026, 7, 6))
+
+    assert plan.scheduled_tasks == []
+    assert plan.conflicts == []
+
+
+def test_two_tasks_at_same_preferred_time_are_bumped_not_conflicting():
+    owner = Owner("Sam", available_minutes_per_day=120, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    pet.add_task(Task("Walk", Category.WALK, 30, Priority.HIGH, preferred_time=8 * 60))
+    pet.add_task(Task("Meds", Category.MEDS, 10, Priority.HIGH, preferred_time=8 * 60))
+
+    scheduler = Scheduler(owner)
+    plan = scheduler.generate_plan(plan_date=date(2026, 7, 6))
+
+    # Both placed, second slid past the first — no runtime overlap remains.
+    assert len(plan.scheduled_tasks) == 2
+    assert scheduler.detect_conflicts(plan) == []
+    # The slide is reported as a bump note, not a hard conflict.
+    assert any("moved from" in note for note in plan.conflicts)
+
+
+def test_anchored_task_before_start_is_clamped_to_start():
+    owner = Owner("Sam", available_minutes_per_day=120, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    pet.add_task(Task("Early walk", Category.WALK, 30, Priority.HIGH, preferred_time=6 * 60))
+
+    plan = Scheduler(owner).generate_plan(plan_date=date(2026, 7, 6))
+
+    # Preferred 06:00 is before the 08:00 start, so it moves up to 08:00.
+    assert plan.scheduled_tasks[0].start_time == 8 * 60
+
+
+def test_anchored_task_past_day_end_overflows_and_is_reported():
+    owner = Owner("Sam", available_minutes_per_day=120, preferred_start_time=8 * 60)
+    pet = owner.add_pet(Pet("Rex", "dog", "Labrador", 3))
+    # Day window is 08:00-10:00; an 18:00 task fits the budget but not the window.
+    pet.add_task(Task("Evening walk", Category.WALK, 30, Priority.HIGH, preferred_time=18 * 60))
+
+    plan = Scheduler(owner).generate_plan(plan_date=date(2026, 7, 6))
+
+    assert plan.scheduled_tasks == []
+    assert any("couldn't fit" in note for note in plan.conflicts)
